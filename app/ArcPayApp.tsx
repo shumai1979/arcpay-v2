@@ -1,0 +1,715 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  createUnifiedBalanceKitContext,
+  UnifiedBalanceKit,
+  deposit,
+  spend,
+  getBalances,
+  estimateSpend,
+  isKitError,
+} from "@circle-fin/unified-balance-kit";
+import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2";
+
+const SOURCE_CHAINS = [
+  { id: "Ethereum_Sepolia", label: "Ethereum Sepolia", short: "Ethereum", abbr: "ETH",  color: "#627EEA" },
+  { id: "Base_Sepolia",     label: "Base Sepolia",     short: "Base",     abbr: "BASE", color: "#2563EB" },
+  { id: "Arbitrum_Sepolia", label: "Arbitrum Sepolia", short: "Arbitrum", abbr: "ARB",  color: "#28A0F0" },
+  { id: "Optimism_Sepolia", label: "Optimism Sepolia", short: "Optimism", abbr: "OP",   color: "#FF0420" },
+];
+
+const DEST_CHAIN = "Arc_Testnet";
+
+const CHAIN_IDS: Record<string, string> = {
+  Ethereum_Sepolia: "0xaa36a7",
+  Base_Sepolia:     "0x14a34",
+  Arbitrum_Sepolia: "0x66eee",
+  Optimism_Sepolia: "0xaa37dc",
+};
+
+const CHAIN_PARAMS: Record<string, object> = {
+  Ethereum_Sepolia: { chainId: "0xaa36a7", chainName: "Sepolia", rpcUrls: ["https://rpc.ankr.com/eth_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia.etherscan.io"] },
+  Base_Sepolia:     { chainId: "0x14a34",  chainName: "Base Sepolia", rpcUrls: ["https://rpc.ankr.com/base_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia-explorer.base.org"] },
+  Arbitrum_Sepolia: { chainId: "0x66eee",  chainName: "Arbitrum Sepolia", rpcUrls: ["https://rpc.ankr.com/arbitrum_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia.arbiscan.io"] },
+  Optimism_Sepolia: { chainId: "0xaa37dc", chainName: "Optimism Sepolia", rpcUrls: ["https://rpc.ankr.com/optimism_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia-optimism.etherscan.io"] },
+};
+
+// Circle USDC contract addresses on testnets
+const USDC_CONTRACTS: Record<string, string> = {
+  Ethereum_Sepolia: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+  Base_Sepolia:     "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  Arbitrum_Sepolia: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+  Optimism_Sepolia: "0x5fd84259d66Cd46123540766Be93DFE6D43130D9",
+};
+
+// Block explorer tx URLs per chain
+const CHAIN_EXPLORERS: Record<string, string> = {
+  Ethereum_Sepolia: "https://sepolia.etherscan.io/tx/",
+  Base_Sepolia:     "https://sepolia-explorer.base.org/tx/",
+  Arbitrum_Sepolia: "https://sepolia.arbiscan.io/tx/",
+  Optimism_Sepolia: "https://sepolia-optimism.etherscan.io/tx/",
+  Arc_Testnet:      "https://testnet.arcscan.app/tx/",
+};
+
+// (RPC endpoints moved server-side to /api/balance — no CORS issues)
+
+/**
+ * Smart provider picker — handles Rabby + MetaMask coexistence.
+ *
+ * When multiple wallets are installed they fight over window.ethereum.
+ * EIP-5749 wallets expose window.ethereum.providers[] so we can pick
+ * the one the user actually clicked "Connect" on (last-used wins).
+ *
+ * Priority:
+ *  1. window.ethereum.providers[]  — pick MetaMask if present, else first in list
+ *  2. window.rabby                 — Rabby standalone injection
+ *  3. window.ethereum              — single wallet or winner of the fight
+ */
+function getProvider(): any {
+  const w = window as any;
+  // EIP-5749: multiple providers coexist in an array
+  const providers: any[] = w.ethereum?.providers ?? [];
+  if (providers.length > 0) {
+    // Prefer MetaMask; fall back to Rabby; fall back to first available
+    return (
+      providers.find((p: any) => p.isMetaMask && !p.isRabby) ??
+      providers.find((p: any) => p.isRabby) ??
+      providers[0]
+    );
+  }
+  // Rabby-only injection (no providers array)
+  if (w.rabby) return w.rabby;
+  // Single wallet or whichever won the window.ethereum race
+  return w.ethereum ?? null;
+}
+
+// Read USDC balance via our Next.js API route (server-side RPC — zero CORS issues)
+async function readUSDCBalance(chain: string, walletAddress: string): Promise<string | null> {
+  if (!USDC_CONTRACTS[chain]) return null;
+  try {
+    const res = await fetch(`/api/balance?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(walletAddress)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.error) return null;
+    const bal = parseFloat(json.balance ?? "0");
+    return isNaN(bal) ? null : bal.toFixed(2);
+  } catch {
+    return null;
+  }
+}
+
+type Page = "home" | "create" | "pay" | "success";
+type TxStep = "idle" | "depositing" | "spending" | "done" | "error";
+
+interface Invoice { merchant: string; amount: string; memo: string; chain: string; ts: number; }
+interface Balance { chain: string; amount: string; }
+
+function encodeInvoice(inv: Invoice) { return btoa(JSON.stringify(inv)); }
+function decodeInvoice(raw: string): Invoice | null { try { return JSON.parse(atob(raw)); } catch { return null; } }
+function shortAddr(addr: string) { return addr ? addr.slice(0, 6) + "..." + addr.slice(-4) : ""; }
+function fmt(n: string | number) { const v = parseFloat(String(n)); return isNaN(v) ? "0.00" : v.toFixed(2); }
+function fmtBal(n: string | number) {
+  const v = parseFloat(String(n));
+  if (isNaN(v) || v === 0) return null;
+  return v.toFixed(2);
+}
+
+function parseFees(est: any): string {
+  if (!est?.fees) return "";
+  const f = est.fees;
+  if (typeof f === "string" || typeof f === "number") { const s = String(f); return s && s !== "0" ? `~${s} USDC` : ""; }
+  if (f.total !== undefined) { const t = String(f.total); return t && t !== "0" && !t.includes("object") ? `~${t} USDC` : ""; }
+  try {
+    const src = parseFloat(String(f.source?.amount ?? f.source ?? "0"));
+    const dst = parseFloat(String(f.destination?.amount ?? f.destination ?? "0"));
+    const sum = (src + dst).toFixed(4).replace(/\.?0+$/, "");
+    return sum && sum !== "0" ? `~${sum} USDC` : "";
+  } catch { return ""; }
+}
+
+const ctx = createUnifiedBalanceKitContext();
+
+function ArcHex({ size = 32 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+      <polygon points="16,2 27,8.5 27,23.5 16,30 5,23.5 5,8.5" fill="rgba(45,125,252,0.15)" stroke="rgba(45,125,252,0.6)" strokeWidth="1.2"/>
+      <text x="16" y="20" textAnchor="middle" fill="#4f96ff" fontSize="7.5" fontFamily="monospace" fontWeight="700" letterSpacing="0.5">ARC</text>
+    </svg>
+  );
+}
+
+function ChainPill({ color, abbr, size = "md" }: { color: string; abbr: string; size?: "sm" | "md" | "lg" }) {
+  const dim = size === "sm" ? 28 : size === "lg" ? 44 : 36;
+  const fs = size === "sm" ? "0.55rem" : size === "lg" ? "0.7rem" : "0.62rem";
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      width: dim, height: dim, borderRadius: "50%",
+      background: color + "1a", border: `1.5px solid ${color}55`,
+      color, fontSize: fs, fontFamily: "monospace", fontWeight: 700,
+      letterSpacing: "0.03em", flexShrink: 0,
+    }}>{abbr}</span>
+  );
+}
+
+function StepDot({ state }: { state: "idle" | "active" | "done" }) {
+  const bg = state === "done" ? "#22c55e" : state === "active" ? "#2d7dfc" : "rgba(255,255,255,0.08)";
+  const border = state === "done" ? "#22c55e" : state === "active" ? "#4f96ff" : "rgba(255,255,255,0.15)";
+  const pulse = state === "active";
+  return (
+    <span style={{
+      display: "inline-flex", width: 12, height: 12, borderRadius: "50%",
+      background: bg, border: `2px solid ${border}`, flexShrink: 0,
+      boxShadow: state === "active" ? "0 0 0 4px rgba(45,125,252,0.2)" : "none",
+      animation: pulse ? "pulseDot 1.2s ease-in-out infinite" : "none",
+    }} />
+  );
+}
+
+export default function ArcPayApp() {
+  const [page, setPage] = useState<Page>("home");
+  const [wallet, setWallet] = useState("");
+  const [adapter, setAdapter] = useState<any>(null);
+  const [invoice, setInvoice] = useState<Invoice | null>(null);
+  const [balances, setBalances] = useState<Balance[]>([]);
+  const [payBalances, setPayBalances] = useState<Record<string, string | null>>({});
+  const [loadingBal, setLoadingBal] = useState(false);
+  const [loadingPayBal, setLoadingPayBal] = useState(false);
+  const [cMemo, setCMemo] = useState("");
+  const [cAmount, setCAmount] = useState("");
+  const [generatedLink, setGeneratedLink] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [payChain, setPayChain] = useState("Ethereum_Sepolia");
+  const [txStep, setTxStep] = useState<TxStep>("idle");
+  const [txMsg, setTxMsg] = useState("");
+  const [txHash, setTxHash] = useState("");
+  const [txChain, setTxChain] = useState("Ethereum_Sepolia");
+  const [txError, setTxError] = useState("");
+  const [estimate, setEstimate] = useState("");
+  const kitRef = useRef<UnifiedBalanceKit | null>(null);
+  // Store the exact provider used at connect time — reused for all subsequent calls
+  // This prevents Rabby/MetaMask from switching providers mid-flow (different addresses)
+  const providerRef = useRef<any>(null);
+
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get("i");
+    if (raw) { const inv = decodeInvoice(raw); if (inv) { setInvoice(inv); setPage("pay"); } }
+  }, []);
+
+  const connectWallet = useCallback(async () => {
+    const eth = getProvider();
+    if (!eth) { alert("Install MetaMask or Rabby to continue."); return; }
+    try {
+      const [acct] = await eth.request({ method: "eth_requestAccounts" }) as string[];
+      providerRef.current = eth; // Lock this provider for the whole session
+      setWallet(acct);
+      console.log("[ArcPay] Connected:", acct, "| isMetaMask:", eth.isMetaMask, "| isRabby:", eth.isRabby);
+      setAdapter(await createViemAdapterFromProvider({ provider: eth, capabilities: { addressContext: "user-controlled" } }));
+    } catch (e) { console.error(e); }
+  }, []);
+
+  // Home page: load unified balances
+  const loadBalances = useCallback(async () => {
+    if (!adapter) return;
+    setLoadingBal(true);
+    try {
+      const res = await getBalances(ctx, { sources: { adapter }, includePending: true });
+      setBalances(((res as any).chainBalances ?? []).map((cb: any) => ({ chain: String(cb.chain), amount: String(cb.confirmedBalance ?? cb.balance ?? "0") })));
+    } catch (e) { console.error(e); }
+    finally { setLoadingBal(false); }
+  }, [adapter]);
+
+  // Pay page: read USDC balance per chain directly from contracts via public RPC
+  // This bypasses Circle SDK CORS issues — reads balanceOf() on each testnet independently
+  const loadPayBalances = useCallback(async (address: string) => {
+    if (!address) return;
+    setLoadingPayBal(true);
+    const results = await Promise.all(
+      SOURCE_CHAINS.map(async c => ({ id: c.id, bal: await readUSDCBalance(c.id, address) }))
+    );
+    const bals: Record<string, string | null> = {};
+    results.forEach(r => { bals[r.id] = r.bal; });
+    setPayBalances(bals);
+    setLoadingPayBal(false);
+    // Auto-select chain with highest USDC balance so user never picks an empty chain by accident
+    const best = results
+      .filter(r => r.bal !== null && parseFloat(r.bal ?? "0") > 0)
+      .sort((a, b) => parseFloat(b.bal ?? "0") - parseFloat(a.bal ?? "0"))[0];
+    if (best) setPayChain(best.id);
+  }, []);
+
+  useEffect(() => { if (adapter && page === "home") loadBalances(); }, [adapter, page, loadBalances]);
+  useEffect(() => { if (wallet && page === "pay") loadPayBalances(wallet); }, [wallet, page, loadPayBalances]);
+
+  const generateInvoice = () => {
+    if (!wallet) { alert("Connect wallet first."); return; }
+    if (!cAmount || parseFloat(cAmount) <= 0) { alert("Enter a valid amount."); return; }
+    const inv: Invoice = { merchant: wallet, amount: cAmount, memo: cMemo || "Payment", chain: DEST_CHAIN, ts: Date.now() };
+    const link = `${window.location.origin}${window.location.pathname}?i=${encodeInvoice(inv)}`;
+    setGeneratedLink(link); setInvoice(inv);
+  };
+
+  useEffect(() => {
+    if (!adapter || !invoice) return;
+    setEstimate("");
+    estimateSpend(ctx, { amount: invoice.amount, from: { adapter, allocations: { amount: invoice.amount, chain: payChain as any } }, to: { adapter, chain: DEST_CHAIN as any } })
+      .then(est => setEstimate(parseFees(est)))
+      .catch(() => {});
+  }, [adapter, invoice, payChain]);
+
+  const payInvoice = async () => {
+    if (!adapter || !invoice) return;
+    setTxStep("depositing"); setTxError(""); setTxHash("");
+    kitRef.current = new UnifiedBalanceKit();
+    // Always use the same provider that was used at connect time
+    const eth = providerRef.current ?? getProvider();
+    if (!eth) { setTxError("No wallet provider found. Install MetaMask or Rabby."); setTxStep("error"); return; }
+    try {
+      const targetId = CHAIN_IDS[payChain];
+      if (targetId) {
+        setTxMsg("Switching network...");
+        try { await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetId }] }); }
+        catch (e: any) {
+          if (e.code === 4902 || e.code === -32603) await eth.request({ method: "wallet_addEthereumChain", params: [CHAIN_PARAMS[payChain]] });
+          else throw e;
+        }
+        // Safety: verify chain AND address are correct before proceeding
+        const actualChainId: string = await eth.request({ method: "eth_chainId" });
+        if (actualChainId.toLowerCase() !== targetId.toLowerCase()) {
+          throw new Error(
+            `Network mismatch: wallet is on chain ${actualChainId}, expected ${targetId} (${SOURCE_CHAINS.find(c=>c.id===payChain)?.label}). ` +
+            `Please switch your wallet to the correct testnet and try again.`
+          );
+        }
+        // Verify the address didn't change (Rabby/MetaMask sometimes switch accounts)
+        const currentAccounts: string[] = await eth.request({ method: "eth_accounts" });
+        const currentAddr = currentAccounts[0]?.toLowerCase() ?? "";
+        console.log("[ArcPay] Pay from:", currentAddr, "| Connected wallet:", wallet, "| Chain:", actualChainId);
+        if (currentAddr && currentAddr !== wallet.toLowerCase()) {
+          throw new Error(
+            `Wallet address changed: connected as ${wallet} but wallet now shows ${currentAddr}. ` +
+            `Please reconnect your wallet and try again.`
+          );
+        }
+        const newAdp = await createViemAdapterFromProvider({ provider: eth, capabilities: { addressContext: "user-controlled" } });
+        setAdapter(newAdp);
+        const srcLabel = SOURCE_CHAINS.find(c => c.id === payChain)?.label ?? payChain;
+
+        // ── Step 1: Calculate required deposit (invoice + Circle flat fee) ──────────
+        //   Circle charges a flat 1 USDC protocol fee on testnet for every spend().
+        //   We deposit invoice.amount + fee so the pool has exactly enough.
+        const CIRCLE_FEE = 1.05;          // 1 USDC flat fee + 5¢ buffer
+        const need = parseFloat(invoice.amount);
+        const depositTotal = (need + CIRCLE_FEE).toFixed(2); // e.g. "11.05" for $10 invoice
+
+        // ── Step 2: Deposit invoice + fee into Circle's unified balance pool ────────
+        setTxMsg(`Depositing ${depositTotal} USDC (${invoice.amount} + ${CIRCLE_FEE} fee) from ${srcLabel}...`);
+        setTxStep("depositing");
+        console.log("[ArcPay] Depositing", depositTotal, "USDC (need", need, "+ fee", CIRCLE_FEE, ")");
+        const depResult = await deposit(ctx, {
+          from: { adapter: newAdp, chain: payChain as any },
+          amount: depositTotal,
+        });
+        console.log("[ArcPay] deposit() result:", depResult);
+
+        // ── Step 2b: Wait for CCTP attestation (cross-chain: Eth/Base/Arb/Op → Arc) ─
+        //   Circle's CCTP requires ~1-3 minutes to attest cross-chain deposits.
+        //   We retry spend() every 15s until it succeeds (or 6 minutes timeout).
+        setTxStep("spending");
+        setTxMsg("Deposit sent — waiting for Circle CCTP attestation (~1-3 min)...");
+
+        const msgs = [
+          "Waiting for Circle CCTP attestation (~1-3 min)...",
+          "Cross-chain bridge processing... hang tight...",
+          "Circle Gateway attesting the transfer...",
+          "Almost there — CCTP finalization in progress...",
+        ];
+        let msgIdx = 0;
+        const msgTimer = setInterval(() => {
+          msgIdx = (msgIdx + 1) % msgs.length;
+        }, 12_000);
+
+        // ── Step 3: Spend from Circle unified balance → merchant on Arc Testnet ─────
+        //   allocations.amount MUST equal amount (Circle API rule).
+        //   Fee is drawn separately from the pool (which has amount + 1.05 deposited).
+        //   to.chain = DEST_CHAIN = "Arc_Testnet" — this is the whole point of the demo.
+        let result: any;
+        const spendStart = Date.now();
+        const SPEND_TIMEOUT = 360_000; // 6 minutes max
+        try {
+          while (true) {
+            const elapsed = Math.floor((Date.now() - spendStart) / 1000);
+            setTxMsg(msgs[msgIdx] + ` (${elapsed}s)`);
+            try {
+              console.log("[ArcPay] spend() attempt →", {
+                amount: invoice.amount, depositTotal, from: payChain, to: DEST_CHAIN, merchant: invoice.merchant,
+              });
+              result = await spend(ctx, {
+                amount: invoice.amount,               // merchant receives exactly this
+                from: {
+                  adapter: newAdp,
+                  // allocations.amount MUST equal amount — Circle draws its fee from the surplus in the pool
+                  allocations: { amount: invoice.amount, chain: payChain as any },
+                },
+                to: {
+                  adapter: newAdp,
+                  chain: DEST_CHAIN as any,           // ← ALWAYS Arc Testnet — the whole point!
+                  recipientAddress: invoice.merchant,
+                },
+              });
+              break; // success — exit the retry loop
+            } catch (e: any) {
+              const msg = (e?.message ?? "") + (e?.name ?? "");
+              const isInsufficientBalance = msg.includes("BALANCE_INSUFFICIENT") || msg.includes("INSUFFICIENT");
+              const timedOut = Date.now() - spendStart >= SPEND_TIMEOUT;
+              if (isInsufficientBalance && !timedOut) {
+                // CCTP attestation not complete yet — wait and retry
+                console.log("[ArcPay] spend() BALANCE_INSUFFICIENT — CCTP not attested yet, retrying in 15s...", e?.message);
+                await new Promise(r => setTimeout(r, 15_000));
+                continue;
+              }
+              throw e; // re-throw non-retriable errors or timeout
+            }
+          }
+        } finally {
+          clearInterval(msgTimer);
+        }
+        setTxHash((result as any)?.txHash ?? "");
+        setTxChain(DEST_CHAIN); // tx settled on Arc Testnet
+      } else {
+        throw new Error("Unsupported chain: " + payChain);
+      }
+      setTxStep("done"); setPage("success");
+    } catch (e: any) {
+      setTxError(isKitError(e) ? `${e.name}: ${e.message}` : e?.message ?? "Unknown error");
+      setTxStep("error");
+    }
+  };
+
+  const copyLink = () => { navigator.clipboard.writeText(generatedLink); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const openLink = () => { window.open(generatedLink, "_blank", "noopener,noreferrer"); };
+  const goHome = () => { setPage("home"); window.history.pushState({}, "", "/"); };
+
+  return (
+    <div className="root">
+      {/* HEADER */}
+      <header className="hdr">
+        <div className="hdr-inner">
+          <div className="logo" onClick={goHome}>
+            <span className="logo-arc">Arc</span><span className="logo-pay">Pay</span>
+            <span className="logo-v">v2</span>
+          </div>
+          <div className="hdr-nav">
+            <button className="nav-link" onClick={goHome}>Dashboard</button>
+            <button className="nav-create" onClick={() => setPage("create")}>+ Invoice</button>
+            {wallet
+              ? <div className="wallet-pill"><span className="w-dot" />{shortAddr(wallet)}</div>
+              : <button className="btn-connect" onClick={connectWallet}>Connect Wallet</button>
+            }
+          </div>
+        </div>
+      </header>
+
+      <main className="main">
+
+        {/* HOME */}
+        {page === "home" && (
+          <div className="pg-home">
+            <section className="hero">
+              <div className="hero-eyebrow">Circle Unified Balance Kit &middot; CCTPv2</div>
+              <h1 className="hero-h1">Accept USDC<br /><span className="h1-grad">from any chain</span></h1>
+              <p className="hero-p">Customers pay from Ethereum, Base, Arbitrum or Optimism.<br />You receive USDC instantly on <b>Arc Testnet</b> &mdash; no bridging, no delays.</p>
+              <div className="hero-btns">
+                <button className="btn-primary" onClick={() => setPage("create")}>Create Invoice</button>
+                <a className="btn-outline" href="https://docs.arc.network/app-kit/unified-balance" target="_blank" rel="noreferrer">Docs</a>
+              </div>
+            </section>
+
+            {/* Flow diagram */}
+            <div className="flow-diagram">
+              <div className="flow-left">
+                <div className="flow-left-label">Pay from any chain</div>
+                <div className="flow-chains-row">
+                  {SOURCE_CHAINS.map(c => (
+                    <div key={c.id} className="flow-chain-item">
+                      <ChainPill color={c.color} abbr={c.abbr} size="md" />
+                      <span className="flow-chain-name">{c.short}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="flow-connector">
+                <div className="flow-line" />
+                <div className="flow-gw-box">
+                  <div className="flow-gw-title">Circle Gateway</div>
+                  <div className="flow-gw-sub">Unified Balance &middot; CCTPv2</div>
+                </div>
+                <div className="flow-line" />
+              </div>
+              <div className="flow-right">
+                <ArcHex size={48} />
+                <div className="flow-arc-title">Arc Testnet</div>
+                <div className="flow-arc-sub">Merchant receives USDC</div>
+              </div>
+            </div>
+
+            {/* Balance */}
+            {wallet ? (
+              <section className="bal-section">
+                <div className="bal-hdr">
+                  <h2 className="bal-title">Unified Balance</h2>
+                  <button className="btn-refresh" onClick={loadBalances} disabled={loadingBal}>{loadingBal ? "..." : "Refresh"}</button>
+                </div>
+                {loadingBal ? (
+                  <div className="bal-grid">{[1,2,3,4].map(i => <div key={i} className="bal-card shimmer" />)}</div>
+                ) : balances.length > 0 ? (
+                  <div className="bal-grid">
+                    {balances.map(b => {
+                      const c = SOURCE_CHAINS.find(x => x.id === b.chain);
+                      return (
+                        <div key={b.chain} className="bal-card">
+                          {c && <ChainPill color={c.color} abbr={c.abbr} size="lg" />}
+                          <div className="bal-chain">{c?.label ?? b.chain}</div>
+                          <div className="bal-amount">{fmt(b.amount)}</div>
+                          <div className="bal-token">USDC</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="empty-state">No unified balance yet. Deposit USDC from any source chain to get started.</div>
+                )}
+              </section>
+            ) : (
+              <div className="cta-connect">
+                <ArcHex size={52} />
+                <h3>Connect your wallet to continue</h3>
+                <p>MetaMask, Rabby, or any EIP-1193 wallet</p>
+                <button className="btn-primary" onClick={connectWallet}>Connect Wallet</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* CREATE */}
+        {page === "create" && (
+          <div className="pg-create">
+            <div className="pg-hdr">
+              <button className="back" onClick={goHome}>&larr; Back</button>
+              <h2 className="pg-title">Create Invoice</h2>
+            </div>
+            {!wallet ? (
+              <div className="cta-connect"><ArcHex size={48} /><p>Connect your wallet first</p><button className="btn-primary" onClick={connectWallet}>Connect Wallet</button></div>
+            ) : (
+              <div className="form-card">
+                <div className="field">
+                  <label className="field-label">Description</label>
+                  <input className="field-input" placeholder="e.g. Consulting - April 2026" value={cMemo} onChange={e => setCMemo(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label className="field-label">Amount (USDC)</label>
+                  <div className="field-with-tag">
+                    <input className="field-input" type="number" placeholder="10.00" min="0.01" step="0.01" value={cAmount} onChange={e => setCAmount(e.target.value)} />
+                    <span className="field-tag">USDC</span>
+                  </div>
+                </div>
+                <div className="field">
+                  <label className="field-label">Your receiving address</label>
+                  <div className="addr-box">{wallet}</div>
+                  <div className="field-hint">USDC will be minted here on Arc Testnet</div>
+                </div>
+                <button className="btn-primary w-full" onClick={generateInvoice}>Generate Payment Link</button>
+
+                {generatedLink && (
+                  <div className="link-result">
+                    <div className="link-result-hdr">
+                      <span className="link-ok">Ready to share</span>
+                      <div className="link-actions">
+                        <button className="btn-open" onClick={openLink}>Open Link</button>
+                        <button className="btn-copy" onClick={copyLink}>{copied ? "Copied!" : "Copy Link"}</button>
+                      </div>
+                    </div>
+                    <div className="link-url">{generatedLink}</div>
+                    <div className="inv-rows">
+                      <div className="inv-row"><span>Amount</span><span>{cAmount} USDC</span></div>
+                      <div className="inv-row"><span>Description</span><span>{cMemo || "Payment"}</span></div>
+                      <div className="inv-row"><span>Recipient</span><span className="mono">{shortAddr(wallet)}</span></div>
+                      <div className="inv-row"><span>Settles on</span><span className="arc-pill">Arc Testnet</span></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PAY */}
+        {page === "pay" && invoice && (
+          <div className="pg-pay">
+            <div className="pay-card">
+              <div className="pay-top">
+                <div className="pay-brand"><span className="logo-arc">Arc</span><span className="logo-pay">Pay</span></div>
+                <div className="pay-amount">${fmt(invoice.amount)}</div>
+                <div className="pay-memo">{invoice.memo}</div>
+              </div>
+
+              <div className="pay-details">
+                <div className="det-row"><span>Merchant</span><span className="mono">{shortAddr(invoice.merchant)}</span></div>
+                <div className="det-row"><span>Amount</span><span>{invoice.amount} USDC</span></div>
+                <div className="det-row"><span>Settles on</span><span className="arc-pill">Arc Testnet</span></div>
+                {estimate && <div className="det-row"><span>Est. fees</span><span>{estimate}</span></div>}
+              </div>
+
+              {txStep === "idle" && (
+                !wallet ? (
+                  <div className="pay-action"><button className="btn-primary w-full" onClick={connectWallet}>Connect Wallet to Pay</button></div>
+                ) : (
+                  <>
+                    <div className="chain-pick">
+                      <div className="chain-pick-label">
+                        Pay from
+                        {loadingPayBal && <span className="chain-bal-loading">loading balances...</span>}
+                      </div>
+                      <div className="chain-pick-grid">
+                        {SOURCE_CHAINS.map(c => {
+                          const bal = payBalances[c.id];
+                          const loaded = !loadingPayBal && bal !== undefined;
+                          const hasEnough = loaded && bal !== null && parseFloat(bal) >= parseFloat(invoice.amount);
+                          const hasSome = loaded && bal !== null && parseFloat(bal) > 0;
+                          const isActive = payChain === c.id;
+                          const isDisabled = loaded && !hasSome; // no funds at all → disable
+                          return (
+                            <button
+                              key={c.id}
+                              className={`cpick-btn${isActive ? " cpick-active" : ""}${hasSome ? " cpick-has-bal" : ""}${isDisabled ? " cpick-disabled" : ""}`}
+                              onClick={() => !isDisabled && setPayChain(c.id)}
+                              disabled={isDisabled}
+                              title={isDisabled ? "No USDC on this chain" : undefined}
+                            >
+                              <ChainPill color={isDisabled ? "#555" : c.color} abbr={c.abbr} size="sm" />
+                              <div className="cpick-info">
+                                <span className="cpick-name">{c.short}</span>
+                                {loadingPayBal ? (
+                                  <span className="cpick-bal" style={{ color: "rgba(255,255,255,0.2)" }}>…</span>
+                                ) : loaded && bal !== null ? (
+                                  <span className="cpick-bal" style={{ color: hasEnough ? "#22c55e" : hasSome ? "#f59e0b" : "rgba(255,255,255,0.25)" }}>
+                                    {parseFloat(bal) > 0 ? `${bal} USDC` : "No funds"}
+                                  </span>
+                                ) : (
+                                  <span className="cpick-bal" style={{ color: "rgba(255,255,255,0.2)" }}>--</span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Warning if selected chain doesn't have enough funds (including 1 USDC fee) */}
+                      {!loadingPayBal && payBalances[payChain] !== undefined && (
+                        (() => {
+                          const selBal = parseFloat(payBalances[payChain] ?? "0");
+                          const need = parseFloat(invoice.amount);
+                          const totalNeeded = need + 1.05; // invoice + Circle fee
+                          if (selBal === 0) return (
+                            <div className="chain-warn chain-warn-error">⚠ No USDC on {SOURCE_CHAINS.find(c=>c.id===payChain)?.short}. Select a chain with funds.</div>
+                          );
+                          if (selBal < totalNeeded) return (
+                            <div className="chain-warn chain-warn-warn">⚠ Need {totalNeeded.toFixed(2)} USDC ({need.toFixed(2)} + 1 fee) — you have {selBal.toFixed(2)} USDC.</div>
+                          );
+                          return null;
+                        })()
+                      )}
+                    </div>
+                    <div className="route-box">
+                      <div className="route-row">
+                        <ChainPill color={SOURCE_CHAINS.find(c=>c.id===payChain)?.color??""} abbr={SOURCE_CHAINS.find(c=>c.id===payChain)?.abbr??""} size="sm" />
+                        <span className="route-name">{SOURCE_CHAINS.find(c=>c.id===payChain)?.short}</span>
+                        <span className="route-amt">{invoice.amount} USDC</span>
+                      </div>
+                      <div className="route-mid">via Circle Gateway</div>
+                      <div className="route-row">
+                        <ArcHex size={26} />
+                        <span className="route-name">Arc Testnet</span>
+                        <span className="route-amt">{invoice.amount} USDC</span>
+                      </div>
+                    </div>
+                    {(() => {
+                      const selBal = parseFloat(payBalances[payChain] ?? "0");
+                      const need = parseFloat(invoice.amount);
+                      const canPay = !loadingPayBal && payBalances[payChain] !== undefined ? selBal >= need + 1.05 : true;
+                      return (
+                        <div className="pay-action">
+                          <button className="btn-pay" onClick={payInvoice} disabled={!canPay} style={!canPay ? { opacity: 0.4, cursor: "not-allowed" } : {}}>
+                            Pay {invoice.amount} USDC
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )
+              )}
+
+              {(txStep === "depositing" || txStep === "spending") && (
+                <div className="tx-prog">
+                  <div className="tx-steps">
+                    <div className="tx-step">
+                      <StepDot state="done" />
+                      <span className="ts-done">Network switched</span>
+                    </div>
+                    <div className="tx-stem" />
+                    <div className="tx-step">
+                      <StepDot state="active" />
+                      <span className="ts-active">Circle cross-chain transfer</span>
+                    </div>
+                    <div className="tx-stem" />
+                    <div className="tx-step">
+                      <StepDot state="idle" />
+                      <span>USDC minted on Arc Testnet</span>
+                    </div>
+                  </div>
+                  <div className="tx-msg">{txMsg}</div>
+                  <div className="tx-spin" />
+                </div>
+              )}
+
+              {txStep === "error" && (
+                <div className="tx-err">
+                  <div className="tx-err-badge">Error</div>
+                  <div className="tx-err-msg">{txError}</div>
+                  <button className="btn-outline" onClick={() => { setTxStep("idle"); setTxError(""); }}>Try Again</button>
+                </div>
+              )}
+
+              {txStep === "done" && (
+                <div className="tx-done">
+                  <svg width="52" height="52" viewBox="0 0 52 52"><circle cx="26" cy="26" r="24" fill="rgba(34,197,94,0.12)" stroke="#22c55e" strokeWidth="1.5"/><polyline points="15,26 23,34 37,18" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <div className="done-title">Payment Sent!</div>
+                  <div className="done-sub">USDC settled on Arc Testnet</div>
+                  {txHash && <a className="arc-link" href={`${CHAIN_EXPLORERS[txChain] ?? "https://testnet.arcscan.app/tx/"}${txHash}`} target="_blank" rel="noreferrer">View on ArcScan ↗</a>}
+                  <button className="btn-primary" onClick={goHome}>Dashboard</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SUCCESS */}
+        {page === "success" && (
+          <div className="pg-success">
+            <div className="success-card">
+              <svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="rgba(34,197,94,0.12)" stroke="#22c55e" strokeWidth="1.5"/><polyline points="18,32 28,42 46,22" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <h2 className="suc-title">Payment Complete!</h2>
+              <p className="suc-sub">{invoice?.amount} USDC settled on <strong>Arc Testnet</strong> via Circle Unified Balance.</p>
+              {txHash && <a className="arc-link" href={`${CHAIN_EXPLORERS[txChain] ?? "https://testnet.arcscan.app/tx/"}${txHash}`} target="_blank" rel="noreferrer">View on ArcScan ↗</a>}
+              <button className="btn-primary" onClick={goHome}>Back to Dashboard</button>
+            </div>
+          </div>
+        )}
+      </main>
+
+      <footer className="ftr">
+        Powered by <a href="https://arc.network" target="_blank" rel="noreferrer">Arc Network</a> &amp; <a href="https://circle.com" target="_blank" rel="noreferrer">Circle Unified Balance Kit</a>
+      </footer>
+    </div>
+  );
+}
