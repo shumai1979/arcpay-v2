@@ -13,10 +13,12 @@ import {
 import { createViemAdapterFromProvider } from "@circle-fin/adapter-viem-v2";
 
 const SOURCE_CHAINS = [
-  { id: "Ethereum_Sepolia", label: "Ethereum Sepolia", short: "Ethereum", abbr: "ETH",  color: "#627EEA" },
-  { id: "Base_Sepolia",     label: "Base Sepolia",     short: "Base",     abbr: "BASE", color: "#2563EB" },
-  { id: "Arbitrum_Sepolia", label: "Arbitrum Sepolia", short: "Arbitrum", abbr: "ARB",  color: "#28A0F0" },
-  { id: "Optimism_Sepolia", label: "Optimism Sepolia", short: "Optimism", abbr: "OP",   color: "#FF0420" },
+  { id: "Ethereum_Sepolia",  label: "Ethereum Sepolia",  short: "Ethereum",  abbr: "ETH",  color: "#627EEA", fast: false },
+  { id: "Base_Sepolia",      label: "Base Sepolia",      short: "Base",      abbr: "BASE", color: "#2563EB", fast: false },
+  { id: "Arbitrum_Sepolia",  label: "Arbitrum Sepolia",  short: "Arbitrum",  abbr: "ARB",  color: "#28A0F0", fast: false },
+  { id: "Optimism_Sepolia",  label: "Optimism Sepolia",  short: "Optimism",  abbr: "OP",   color: "#FF0420", fast: false },
+  { id: "Avalanche_Fuji",    label: "Avalanche Fuji",    short: "Avalanche", abbr: "AVAX", color: "#E84142", fast: true  },
+  { id: "Polygon_Amoy",      label: "Polygon Amoy",      short: "Polygon",   abbr: "POL",  color: "#8247E5", fast: true  },
 ];
 
 const DEST_CHAIN = "Arc_Testnet";
@@ -26,13 +28,17 @@ const CHAIN_IDS: Record<string, string> = {
   Base_Sepolia:     "0x14a34",
   Arbitrum_Sepolia: "0x66eee",
   Optimism_Sepolia: "0xaa37dc",
+  Avalanche_Fuji:   "0xa869",    // 43113
+  Polygon_Amoy:     "0x13882",   // 80002
 };
 
 const CHAIN_PARAMS: Record<string, object> = {
-  Ethereum_Sepolia: { chainId: "0xaa36a7", chainName: "Sepolia", rpcUrls: ["https://rpc.ankr.com/eth_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia.etherscan.io"] },
-  Base_Sepolia:     { chainId: "0x14a34",  chainName: "Base Sepolia", rpcUrls: ["https://rpc.ankr.com/base_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia-explorer.base.org"] },
-  Arbitrum_Sepolia: { chainId: "0x66eee",  chainName: "Arbitrum Sepolia", rpcUrls: ["https://rpc.ankr.com/arbitrum_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia.arbiscan.io"] },
-  Optimism_Sepolia: { chainId: "0xaa37dc", chainName: "Optimism Sepolia", rpcUrls: ["https://rpc.ankr.com/optimism_sepolia"], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: ["https://sepolia-optimism.etherscan.io"] },
+  Ethereum_Sepolia: { chainId: "0xaa36a7", chainName: "Sepolia",           rpcUrls: ["https://rpc.ankr.com/eth_sepolia"],       nativeCurrency: { name: "ETH",  symbol: "ETH",  decimals: 18 }, blockExplorerUrls: ["https://sepolia.etherscan.io"] },
+  Base_Sepolia:     { chainId: "0x14a34",  chainName: "Base Sepolia",       rpcUrls: ["https://rpc.ankr.com/base_sepolia"],      nativeCurrency: { name: "ETH",  symbol: "ETH",  decimals: 18 }, blockExplorerUrls: ["https://sepolia-explorer.base.org"] },
+  Arbitrum_Sepolia: { chainId: "0x66eee",  chainName: "Arbitrum Sepolia",   rpcUrls: ["https://rpc.ankr.com/arbitrum_sepolia"],  nativeCurrency: { name: "ETH",  symbol: "ETH",  decimals: 18 }, blockExplorerUrls: ["https://sepolia.arbiscan.io"] },
+  Optimism_Sepolia: { chainId: "0xaa37dc", chainName: "Optimism Sepolia",   rpcUrls: ["https://rpc.ankr.com/optimism_sepolia"], nativeCurrency: { name: "ETH",  symbol: "ETH",  decimals: 18 }, blockExplorerUrls: ["https://sepolia-optimism.etherscan.io"] },
+  Avalanche_Fuji:   { chainId: "0xa869",   chainName: "Avalanche Fuji",     rpcUrls: ["https://api.avax-test.network/ext/bc/C/rpc"], nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 }, blockExplorerUrls: ["https://testnet.snowtrace.io"] },
+  Polygon_Amoy:     { chainId: "0x13882",  chainName: "Polygon Amoy",       rpcUrls: ["https://rpc-amoy.polygon.technology"],   nativeCurrency: { name: "MATIC", symbol: "MATIC", decimals: 18 }, blockExplorerUrls: ["https://amoy.polygonscan.com"] },
 };
 
 // Circle USDC contract addresses on testnets
@@ -41,6 +47,8 @@ const USDC_CONTRACTS: Record<string, string> = {
   Base_Sepolia:     "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   Arbitrum_Sepolia: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
   Optimism_Sepolia: "0x5fd84259d66Cd46123540766Be93DFE6D43130D9",
+  Avalanche_Fuji:   "0x5425890298aed601595a70AB815c96711a31Bc65",
+  Polygon_Amoy:     "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
 };
 
 // Block explorer tx URLs per chain
@@ -49,7 +57,19 @@ const CHAIN_EXPLORERS: Record<string, string> = {
   Base_Sepolia:     "https://sepolia-explorer.base.org/tx/",
   Arbitrum_Sepolia: "https://sepolia.arbiscan.io/tx/",
   Optimism_Sepolia: "https://sepolia-optimism.etherscan.io/tx/",
+  Avalanche_Fuji:   "https://testnet.snowtrace.io/tx/",
+  Polygon_Amoy:     "https://amoy.polygonscan.com/tx/",
   Arc_Testnet:      "https://testnet.arcscan.app/tx/",
+};
+
+// Approximate CCTP attestation time per source chain (from Circle docs)
+const CHAIN_SPEED: Record<string, string> = {
+  Ethereum_Sepolia: "~13-19 min",
+  Base_Sepolia:     "~13-19 min",
+  Arbitrum_Sepolia: "~13-19 min",
+  Optimism_Sepolia: "~13-19 min",
+  Avalanche_Fuji:   "~8 sec ⚡",
+  Polygon_Amoy:     "~8 sec ⚡",
 };
 
 // (RPC endpoints moved server-side to /api/balance — no CORS issues)
@@ -313,14 +333,17 @@ export default function ArcPayApp() {
         });
         console.log("[ArcPay] deposit() result:", depResult);
 
-        // ── Step 2b: Wait for CCTP attestation (cross-chain: Eth/Base/Arb/Op → Arc) ─
-        //   Circle's CCTP requires ~1-3 minutes to attest cross-chain deposits.
-        //   We retry spend() every 15s until it succeeds (or 6 minutes timeout).
+        // ── Step 2b: Wait for CCTP attestation (cross-chain → Arc Testnet) ──────────
+        //   CCTP attestation time varies by source chain (per Circle docs):
+        //     Avalanche Fuji / Polygon Amoy: ~8 seconds
+        //     Ethereum / Base / Arbitrum / Optimism Sepolia: ~13-19 minutes (65 ETH blocks)
+        //   We retry spend() every 15s until it succeeds, up to 25 minutes.
         setTxStep("spending");
-        setTxMsg("Deposit sent — waiting for Circle CCTP attestation (~1-3 min)...");
+        const chainSpeed = CHAIN_SPEED[payChain] ?? "~2-15 min";
+        setTxMsg(`Deposit sent — waiting for CCTP attestation (${chainSpeed})...`);
 
         const msgs = [
-          "Waiting for Circle CCTP attestation (~1-3 min)...",
+          `Waiting for Circle CCTP attestation (${chainSpeed})...`,
           "Cross-chain bridge processing... hang tight...",
           "Circle Gateway attesting the transfer...",
           "Almost there — CCTP finalization in progress...",
@@ -336,7 +359,7 @@ export default function ArcPayApp() {
         //   to.chain = DEST_CHAIN = "Arc_Testnet" — this is the whole point of the demo.
         let result: any;
         const spendStart = Date.now();
-        const SPEND_TIMEOUT = 360_000; // 6 minutes max
+        const SPEND_TIMEOUT = 1_500_000; // 25 minutes — covers Ethereum Sepolia's 13-19 min attestation
         try {
           while (true) {
             const elapsed = Math.floor((Date.now() - spendStart) / 1000);
@@ -360,12 +383,17 @@ export default function ArcPayApp() {
               });
               break; // success — exit the retry loop
             } catch (e: any) {
-              const msg = (e?.message ?? "") + (e?.name ?? "");
-              const isInsufficientBalance = msg.includes("BALANCE_INSUFFICIENT") || msg.includes("INSUFFICIENT");
+              // bridge-kit@1.9.0: machine-readable errorCategory (no more string matching needed)
+              const category = e?.errorCategory ?? "";
+              const msgStr  = (e?.message ?? "") + (e?.name ?? "");
+              const isInsufficientBalance =
+                category === "BALANCE_INSUFFICIENT" ||
+                msgStr.includes("BALANCE_INSUFFICIENT") ||
+                msgStr.includes("INSUFFICIENT");
               const timedOut = Date.now() - spendStart >= SPEND_TIMEOUT;
               if (isInsufficientBalance && !timedOut) {
                 // CCTP attestation not complete yet — wait and retry
-                console.log("[ArcPay] spend() BALANCE_INSUFFICIENT — CCTP not attested yet, retrying in 15s...", e?.message);
+                console.log(`[ArcPay] spend() not ready (${elapsed}s) — retrying in 15s...`, e?.errorCategory ?? e?.message);
                 await new Promise(r => setTimeout(r, 15_000));
                 continue;
               }
@@ -419,7 +447,7 @@ export default function ArcPayApp() {
             <section className="hero">
               <div className="hero-eyebrow">Circle Unified Balance Kit &middot; CCTPv2</div>
               <h1 className="hero-h1">Accept USDC<br /><span className="h1-grad">from any chain</span></h1>
-              <p className="hero-p">Customers pay from Ethereum, Base, Arbitrum or Optimism.<br />You receive USDC instantly on <b>Arc Testnet</b> &mdash; no bridging, no delays.</p>
+              <p className="hero-p">Customers pay from Ethereum, Base, Arbitrum, Optimism, Avalanche or Polygon.<br />You receive USDC on <b>Arc Testnet</b> via Circle's CCTP &mdash; no bridging UI needed.</p>
               <div className="hero-btns">
                 <button className="btn-primary" onClick={() => setPage("create")}>Create Invoice</button>
                 <a className="btn-outline" href="https://docs.arc.network/app-kit/unified-balance" target="_blank" rel="noreferrer">Docs</a>
@@ -589,7 +617,10 @@ export default function ArcPayApp() {
                             >
                               <ChainPill color={isDisabled ? "#555" : c.color} abbr={c.abbr} size="sm" />
                               <div className="cpick-info">
-                                <span className="cpick-name">{c.short}</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                  <span className="cpick-name">{c.short}</span>
+                                  {c.fast && <span style={{ fontSize: "0.48rem", background: "rgba(34,197,94,0.15)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 3, padding: "1px 4px", fontWeight: 700, letterSpacing: "0.03em" }}>⚡ fast</span>}
+                                </div>
                                 {loadingPayBal ? (
                                   <span className="cpick-bal" style={{ color: "rgba(255,255,255,0.2)" }}>…</span>
                                 ) : loaded && bal !== null ? (
@@ -626,7 +657,12 @@ export default function ArcPayApp() {
                         <span className="route-name">{SOURCE_CHAINS.find(c=>c.id===payChain)?.short}</span>
                         <span className="route-amt">{invoice.amount} USDC</span>
                       </div>
-                      <div className="route-mid">via Circle Gateway</div>
+                      <div className="route-mid">
+                        via Circle Gateway &middot; CCTP v2
+                        <span style={{ marginLeft: 6, fontSize: "0.7rem", color: SOURCE_CHAINS.find(c=>c.id===payChain)?.fast ? "#22c55e" : "rgba(255,255,255,0.35)" }}>
+                          {CHAIN_SPEED[payChain] ?? ""}
+                        </span>
+                      </div>
                       <div className="route-row">
                         <ArcHex size={26} />
                         <span className="route-name">Arc Testnet</span>

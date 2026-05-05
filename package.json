@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "@circle-fin/adapter-ethers-v6": "^1.6.5",
-    "@circle-fin/adapter-viem-v2": "^1.8.3",
-    "@circle-fin/bridge-kit": "^1.8.3",
-    "@circle-fin/unified-balance-kit": "^1.0.1",
+    "@circle-fin/adapter-viem-v2": "^1.9.0",
+    "@circle-fin/app-kit": "^1.4.2",
+    "@circle-fin/bridge-kit": "^1.9.0",
+    "@circle-fin/unified-balance-kit": "^1.0.2",
     "ethers": "^6.16.0",
     "next": "16.2.4",
     "react": "19.2.4",
