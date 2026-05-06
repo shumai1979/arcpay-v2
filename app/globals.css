@@ -1039,3 +1039,100 @@ input[type=number] { -moz-appearance: textfield; }
   .chain-pick-grid { grid-template-columns: 1fr; }
   .link-actions { flex-direction: column; }
 }
+
+/* --- PAYMENT MODE TOGGLE ---------------------------------------------------- */
+.mode-toggle-wrap {
+  padding: 18px 28px 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.mode-toggle-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: rgba(255,255,255,0.38);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.mode-toggle {
+  display: flex;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 3px;
+  flex: 1;
+}
+.mode-btn {
+  flex: 1;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.42);
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+.mode-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.05); }
+.mode-btn-active {
+  color: #fff;
+  background: rgba(45,125,252,0.22);
+  border: 1px solid rgba(45,125,252,0.45);
+  box-shadow: 0 2px 8px rgba(45,125,252,0.2);
+}
+.mode-btn-active:hover { background: rgba(45,125,252,0.28); }
+
+/* --- NATIVE TOKEN INFO BOX ------------------------------------------------- */
+.native-info-box {
+  margin: 12px 28px 0;
+  padding: 14px 16px;
+  background: rgba(167,139,250,0.06);
+  border: 1px solid rgba(167,139,250,0.2);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: popIn 0.2s ease both;
+}
+.nib-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+.nib-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(167,139,250,0.65);
+  flex-shrink: 0;
+}
+.nib-value {
+  color: rgba(255,255,255,0.72);
+  font-weight: 500;
+  text-align: right;
+}
+.nib-warn {
+  font-size: 0.75rem;
+  color: #f87171;
+  background: rgba(248,113,113,0.08);
+  border: 1px solid rgba(248,113,113,0.2);
+  border-radius: 6px;
+  padding: 5px 10px;
+  margin-top: 2px;
+}
+
+/* --- RESPONSIVE (additions) ------------------------------------------------ */
+@media (max-width: 720px) {
+  .mode-toggle-wrap { padding-left: 18px; padding-right: 18px; }
+  .native-info-box  { margin-left: 18px; margin-right: 18px; }
+}
