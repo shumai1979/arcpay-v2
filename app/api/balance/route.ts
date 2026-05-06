@@ -5,6 +5,8 @@ const USDC: Record<string, string> = {
   Base_Sepolia:     "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   Arbitrum_Sepolia: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
   Optimism_Sepolia: "0x5fd84259d66Cd46123540766Be93DFE6D43130D9",
+  Avalanche_Fuji:   "0x5425890298aed601595a70AB815c96711a31Bc65",
+  Polygon_Amoy:     "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582",
 };
 
 const RPCS: Record<string, string[]> = {
@@ -27,6 +29,16 @@ const RPCS: Record<string, string[]> = {
     "https://optimism-sepolia-rpc.publicnode.com",
     "https://1rpc.io/op-sepolia",
     "https://optimism-sepolia.drpc.org",
+  ],
+  Avalanche_Fuji: [
+    "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+    "https://api.avax-test.network/ext/bc/C/rpc",
+    "https://avalanche-fuji.drpc.org",
+  ],
+  Polygon_Amoy: [
+    "https://polygon-amoy-bor-rpc.publicnode.com",
+    "https://rpc-amoy.polygon.technology",
+    "https://polygon-amoy.drpc.org",
   ],
 };
 
